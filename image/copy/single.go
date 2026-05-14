@@ -804,6 +804,16 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 				wrapped: ic.c.rawSource,
 				bar:     bar,
 			}
+			// Setup progress reporting and report a new artifact event
+			// if the channel available and a non-zero interval set.
+			if ic.c.options.Progress != nil && ic.c.options.ProgressInterval > 0 {
+				proxy.reporter = &progressReporter{
+					channel:  ic.c.options.Progress,
+					interval: ic.c.options.ProgressInterval,
+					artifact: srcInfo,
+				}
+				proxy.reporter.reportNewArtifact()
+			}
 			uploadedBlob, err := ic.c.dest.PutBlobPartial(ctx, &proxy, srcInfo, private.PutBlobPartialOptions{
 				Cache:      ic.c.blobInfoCache,
 				EmptyLayer: emptyLayer,
@@ -817,6 +827,12 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 				}
 				bar.mark100PercentComplete()
 				hideProgressBar = false
+
+				// Report completion for an artifact if possible.
+				if proxy.reporter != nil {
+					proxy.reporter.reportDone()
+				}
+
 				logrus.Debugf("Retrieved partial blob %v", srcInfo.Digest)
 				return true, updatedBlobInfoFromUpload(srcInfo, uploadedBlob), nil
 			}
