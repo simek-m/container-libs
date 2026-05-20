@@ -634,7 +634,7 @@ func (ic *imageCopier) copyConfig(ctx context.Context, src types.Image) error {
 				return types.BlobInfo{}, fmt.Errorf("reading config blob %s: %w", srcInfo.Digest, err)
 			}
 
-			destInfo, err := ic.copyBlobFromStream(ctx, bytes.NewReader(configBlob), srcInfo, nil, true, false, bar, -1, false)
+			destInfo, err := ic.copyBlobFromStream(ctx, bytes.NewReader(configBlob), srcInfo, nil, true, false, bar, -1, false, nil)
 			if err != nil {
 				return types.BlobInfo{}, err
 			}
@@ -789,6 +789,7 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 	// of the source file are not known yet and must be fetched.
 	// Attempt a partial only when the source allows to retrieve a blob partially and
 	// the destination has support for it.
+	var reporter *progressReporter
 	if canAvoidProcessingCompleteLayer && ic.c.rawSource.SupportsGetBlobAt() && ic.c.dest.SupportsPutBlobPartial() {
 		reused, blobInfo, err := func() (bool, types.BlobInfo, error) { // A scope for defer
 			bar, err := ic.c.createProgressBar(pool, true, srcInfo, "blob", "done")
@@ -804,15 +805,9 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 				wrapped: ic.c.rawSource,
 				bar:     bar,
 			}
-			// Setup progress reporting and report a new artifact event
-			// if the channel available and a non-zero interval set.
 			if ic.c.options.Progress != nil && ic.c.options.ProgressInterval > 0 {
-				proxy.reporter = &progressReporter{
-					channel:  ic.c.options.Progress,
-					interval: ic.c.options.ProgressInterval,
-					artifact: srcInfo,
-				}
-				proxy.reporter.reportNewArtifact()
+				reporter = newProgressReporter(ic.c.options.Progress, ic.c.options.ProgressInterval, srcInfo)
+				proxy.reporter = reporter
 			}
 			uploadedBlob, err := ic.c.dest.PutBlobPartial(ctx, &proxy, srcInfo, private.PutBlobPartialOptions{
 				Cache:      ic.c.blobInfoCache,
@@ -828,9 +823,8 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 				bar.mark100PercentComplete()
 				hideProgressBar = false
 
-				// Report completion for an artifact if possible.
-				if proxy.reporter != nil {
-					proxy.reporter.reportDone()
+				if reporter != nil {
+					reporter.reportDone()
 				}
 
 				logrus.Debugf("Retrieved partial blob %v", srcInfo.Digest)
@@ -839,6 +833,10 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 			// On a "partial content not available" error, ignore it and retrieve the whole layer.
 			var perr private.ErrFallbackToOrdinaryLayerDownload
 			if errors.As(err, &perr) {
+				// Reset progress, the reporter is reused for the fallback.
+				if reporter != nil {
+					reporter.reset()
+				}
 				logrus.Debugf("Failed to retrieve partial blob: %v", err)
 				return false, types.BlobInfo{}, nil
 			}
@@ -866,7 +864,7 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 		}
 		defer srcStream.Close()
 
-		blobInfo, diffIDChan, err := ic.copyLayerFromStream(ctx, srcStream, types.BlobInfo{Digest: srcInfo.Digest, Size: srcBlobSize, MediaType: srcInfo.MediaType, Annotations: srcInfo.Annotations}, diffIDIsNeeded, toEncrypt, bar, layerIndex, emptyLayer)
+		blobInfo, diffIDChan, err := ic.copyLayerFromStream(ctx, srcStream, types.BlobInfo{Digest: srcInfo.Digest, Size: srcBlobSize, MediaType: srcInfo.MediaType, Annotations: srcInfo.Annotations}, diffIDIsNeeded, toEncrypt, bar, layerIndex, emptyLayer, reporter)
 		if err != nil {
 			return types.BlobInfo{}, "", err
 		}
@@ -896,6 +894,10 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 			}
 		}
 
+		// Only report completion on success.
+		if reporter != nil {
+			reporter.reportDone()
+		}
 		bar.mark100PercentComplete()
 		return blobInfo, diffID, nil
 	}()
@@ -945,6 +947,7 @@ func updatedBlobInfoFromReuse(inputInfo types.BlobInfo, reusedBlob private.Reuse
 // and returns a complete blobInfo of the copied blob and perhaps a <-chan diffIDResult if diffIDIsNeeded, to be read by the caller.
 func (ic *imageCopier) copyLayerFromStream(ctx context.Context, srcStream io.Reader, srcInfo types.BlobInfo,
 	diffIDIsNeeded bool, toEncrypt bool, bar *progressBar, layerIndex int, emptyLayer bool,
+	reporter *progressReporter,
 ) (types.BlobInfo, <-chan diffIDResult, error) {
 	var getDiffIDRecorder func(compressiontypes.DecompressorFunc) io.Writer // = nil
 	var diffIDChan chan diffIDResult
@@ -970,7 +973,7 @@ func (ic *imageCopier) copyLayerFromStream(ctx context.Context, srcStream io.Rea
 		}
 	}
 
-	blobInfo, err := ic.copyBlobFromStream(ctx, srcStream, srcInfo, getDiffIDRecorder, false, toEncrypt, bar, layerIndex, emptyLayer) // Sets err to nil on success
+	blobInfo, err := ic.copyBlobFromStream(ctx, srcStream, srcInfo, getDiffIDRecorder, false, toEncrypt, bar, layerIndex, emptyLayer, reporter) // Sets err to nil on success
 	return blobInfo, diffIDChan, err
 	// We need the defer … pipeWriter.CloseWithError() to happen HERE so that the caller can block on reading from diffIDChan
 }

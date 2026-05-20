@@ -18,19 +18,17 @@ func newSUT(
 ) *progressReader {
 	artifact := types.BlobInfo{Size: 10}
 
-	go func() {
-		res := <-channel
-		assert.Equal(t, res.Event, types.ProgressEventNewArtifact)
-		assert.Equal(t, res.Artifact, artifact)
-	}()
-	res := newProgressReader(reader, channel, duration, artifact)
+	reporter := newProgressReporter(channel, duration, artifact)
+	res := <-channel
+	assert.Equal(t, res.Event, types.ProgressEventNewArtifact)
+	assert.Equal(t, res.Artifact, artifact)
 
-	return res
+	return newProgressReader(reader, reporter)
 }
 
 func TestNewProgressReader(t *testing.T) {
 	// Given
-	channel := make(chan types.ProgressProperties)
+	channel := make(chan types.ProgressProperties, 1)
 	sut := newSUT(t, nil, time.Second, channel)
 	assert.NotNil(t, sut)
 
@@ -44,7 +42,7 @@ func TestNewProgressReader(t *testing.T) {
 
 func TestReadWithoutEvent(t *testing.T) {
 	// Given
-	channel := make(chan types.ProgressProperties)
+	channel := make(chan types.ProgressProperties, 1)
 	reader := bytes.NewReader([]byte{0, 1, 2})
 	sut := newSUT(t, reader, time.Second, channel)
 	assert.NotNil(t, sut)
@@ -60,7 +58,7 @@ func TestReadWithoutEvent(t *testing.T) {
 
 func TestReadWithEvent(t *testing.T) {
 	// Given
-	channel := make(chan types.ProgressProperties)
+	channel := make(chan types.ProgressProperties, 1)
 	reader := bytes.NewReader([]byte{0, 1, 2, 3, 4, 5, 6})
 	sut := newSUT(t, reader, time.Nanosecond, channel)
 	assert.NotNil(t, sut)
