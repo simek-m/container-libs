@@ -15,20 +15,47 @@ type progressReporter struct {
 	artifact     types.BlobInfo                  // The blob metadata which is currently being progressed
 	lastUpdate   time.Time                       // The last time a progress channel event was sent
 	offset       uint64                          // The currently downloaded size in bytes
-	offsetUpdate uint64                          // The number of bytes downloaded within the last update interval
+	offsetUpdate uint64                          // The number of bytes downloaded since lastUpdate
 }
 
-// reportNewArtifact fires types.ProgressEventNewArtifact to its progress channel.
-func (r *progressReporter) reportNewArtifact() {
-	r.channel <- types.ProgressProperties{
+// newProgressReporter creates a new progress reporter
+// and immediately reports a new artifact event.
+func newProgressReporter(
+	channel chan<- types.ProgressProperties,
+	interval time.Duration,
+	artifact types.BlobInfo,
+) *progressReporter {
+	channel <- types.ProgressProperties{
 		Event:    types.ProgressEventNewArtifact,
-		Artifact: r.artifact,
+		Artifact: artifact,
+	}
+	return &progressReporter{
+		channel:    channel,
+		interval:   interval,
+		artifact:   artifact,
+		lastUpdate: time.Now(),
+	}
+}
+
+// reset resets the reporters progress
+// and reports its zeroed state.
+// It's meant to be used on error when
+// the processing has to be re-started
+// (e.g. ErrFallbackToOrdinaryLayerDownload).
+func (r *progressReporter) reset() {
+	r.offset = 0
+	r.offsetUpdate = 0
+
+	r.channel <- types.ProgressProperties{
+		Event:        types.ProgressEventRead,
+		Artifact:     r.artifact,
+		Offset:       r.offset,
+		OffsetUpdate: r.offsetUpdate,
 	}
 	r.lastUpdate = time.Now()
 }
 
-// reportRead fires the types.ProgressEventRead event with `bytesRead`
-// to its progress channel.
+// reportRead reports progress with the number of `bytesRead`.
 func (r *progressReporter) reportRead(bytesRead uint64) {
 	r.offset += bytesRead
 	r.offsetUpdate += bytesRead
@@ -44,7 +71,7 @@ func (r *progressReporter) reportRead(bytesRead uint64) {
 	}
 }
 
-// reportDone fires the ProgressEventDone to its progress channel.
+// reportDone reports completion.
 func (r *progressReporter) reportDone() {
 	r.channel <- types.ProgressProperties{
 		Event:        types.ProgressEventDone,
@@ -54,34 +81,23 @@ func (r *progressReporter) reportDone() {
 	}
 }
 
-// progressReader is an io.Reader that reports its progress to
-// an underlying *progressReporter.
+// progressReader extends a wrapped io.Reader
+// with additional reporting of its progress.
 type progressReader struct {
 	source io.Reader
 	*progressReporter
 }
 
-// newProgressReader creates a new progress reader for
-// `source`:   The source when internally reading bytes
-// `channel`:  The reporter channel to which the progress will be sent
-// `interval`: The update interval to indicate how often the progress should update
-// `artifact`: The blob metadata which is currently being progressed.
+// newProgressReader creates a new progress reader that wraps source
+// and reports progress through the given reporter.
 func newProgressReader(
 	source io.Reader,
-	channel chan<- types.ProgressProperties,
-	interval time.Duration,
-	artifact types.BlobInfo,
+	reporter *progressReporter,
 ) *progressReader {
-	r := &progressReader{
-		source: source,
-		progressReporter: &progressReporter{
-			channel:  channel,
-			interval: interval,
-			artifact: artifact,
-		},
+	return &progressReader{
+		source:           source,
+		progressReporter: reporter,
 	}
-	r.reportNewArtifact()
-	return r
 }
 
 // Read continuously reads bytes into the progress reader and reports the
