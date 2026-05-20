@@ -864,7 +864,7 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 		}
 		defer srcStream.Close()
 
-		// Create a reporter if not re-used on ErrFallbackToOrdinaryLayerDownload.
+		// Create a reporter if not reused on ErrFallbackToOrdinaryLayerDownload.
 		if reporter == nil && ic.c.options.Progress != nil && ic.c.options.ProgressInterval > 0 {
 			reporter = newProgressReporter(ic.c.options.Progress, ic.c.options.ProgressInterval, srcInfo)
 		}
