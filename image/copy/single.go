@@ -864,6 +864,10 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 		}
 		defer srcStream.Close()
 
+		// Create a reporter if not re-used on ErrFallbackToOrdinaryLayerDownload.
+		if reporter == nil && ic.c.options.Progress != nil && ic.c.options.ProgressInterval > 0 {
+			reporter = newProgressReporter(ic.c.options.Progress, ic.c.options.ProgressInterval, srcInfo)
+		}
 		blobInfo, diffIDChan, err := ic.copyLayerFromStream(ctx, srcStream, types.BlobInfo{Digest: srcInfo.Digest, Size: srcBlobSize, MediaType: srcInfo.MediaType, Annotations: srcInfo.Annotations}, diffIDIsNeeded, toEncrypt, bar, layerIndex, emptyLayer, reporter)
 		if err != nil {
 			return types.BlobInfo{}, "", err
