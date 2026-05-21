@@ -707,8 +707,8 @@ type SystemContext struct {
 type ProgressEvent uint
 
 const (
-	// ProgressEventNewArtifact will be fired when starting processing a new
-	// artifact
+	// ProgressEventNewArtifact will be fired when starting to process
+	// a new artifact
 	ProgressEventNewArtifact ProgressEvent = iota
 
 	// ProgressEventRead indicates that the artifact download is currently in
