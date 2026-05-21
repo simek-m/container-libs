@@ -634,10 +634,15 @@ func (ic *imageCopier) copyConfig(ctx context.Context, src types.Image) error {
 				return types.BlobInfo{}, fmt.Errorf("reading config blob %s: %w", srcInfo.Digest, err)
 			}
 
-			destInfo, err := ic.copyBlobFromStream(ctx, bytes.NewReader(configBlob), srcInfo, nil, true, false, bar, -1, false, nil)
+			var reporter progressReporter = &noopProgressReporter{}
+			if ic.c.options.Progress != nil && ic.c.options.ProgressInterval > 0 {
+				reporter = newChannelProgressReporter(ic.c.options.Progress, ic.c.options.ProgressInterval, srcInfo)
+			}
+			destInfo, err := ic.copyBlobFromStream(ctx, bytes.NewReader(configBlob), srcInfo, nil, true, false, bar, -1, false, reporter)
 			if err != nil {
 				return types.BlobInfo{}, err
 			}
+			reporter.reportDone()
 
 			bar.mark100PercentComplete()
 			return destInfo, nil
@@ -789,7 +794,10 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 	// of the source file are not known yet and must be fetched.
 	// Attempt a partial only when the source allows to retrieve a blob partially and
 	// the destination has support for it.
-	var reporter *progressReporter
+	var reporter progressReporter = &noopProgressReporter{}
+	if ic.c.options.Progress != nil && ic.c.options.ProgressInterval > 0 {
+		reporter = newChannelProgressReporter(ic.c.options.Progress, ic.c.options.ProgressInterval, srcInfo)
+	}
 	if canAvoidProcessingCompleteLayer && ic.c.rawSource.SupportsGetBlobAt() && ic.c.dest.SupportsPutBlobPartial() {
 		reused, blobInfo, err := func() (bool, types.BlobInfo, error) { // A scope for defer
 			bar, err := ic.c.createProgressBar(pool, true, srcInfo, "blob", "done")
@@ -802,12 +810,9 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 			}()
 
 			proxy := blobChunkAccessorProxy{
-				wrapped: ic.c.rawSource,
-				bar:     bar,
-			}
-			if ic.c.options.Progress != nil && ic.c.options.ProgressInterval > 0 {
-				reporter = newProgressReporter(ic.c.options.Progress, ic.c.options.ProgressInterval, srcInfo)
-				proxy.reporter = reporter
+				wrapped:  ic.c.rawSource,
+				bar:      bar,
+				reporter: reporter,
 			}
 			uploadedBlob, err := ic.c.dest.PutBlobPartial(ctx, &proxy, srcInfo, private.PutBlobPartialOptions{
 				Cache:      ic.c.blobInfoCache,
@@ -823,9 +828,7 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 				bar.mark100PercentComplete()
 				hideProgressBar = false
 
-				if reporter != nil {
-					reporter.reportDone()
-				}
+				reporter.reportDone()
 
 				logrus.Debugf("Retrieved partial blob %v", srcInfo.Digest)
 				return true, updatedBlobInfoFromUpload(srcInfo, uploadedBlob), nil
@@ -834,9 +837,7 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 			var perr private.ErrFallbackToOrdinaryLayerDownload
 			if errors.As(err, &perr) {
 				// Reset progress, the reporter is reused for the fallback.
-				if reporter != nil {
-					reporter.reset()
-				}
+				reporter.reset()
 				logrus.Debugf("Failed to retrieve partial blob: %v", err)
 				return false, types.BlobInfo{}, nil
 			}
@@ -864,10 +865,6 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 		}
 		defer srcStream.Close()
 
-		// Create a reporter if not reused on ErrFallbackToOrdinaryLayerDownload.
-		if reporter == nil && ic.c.options.Progress != nil && ic.c.options.ProgressInterval > 0 {
-			reporter = newProgressReporter(ic.c.options.Progress, ic.c.options.ProgressInterval, srcInfo)
-		}
 		blobInfo, diffIDChan, err := ic.copyLayerFromStream(ctx, srcStream, types.BlobInfo{Digest: srcInfo.Digest, Size: srcBlobSize, MediaType: srcInfo.MediaType, Annotations: srcInfo.Annotations}, diffIDIsNeeded, toEncrypt, bar, layerIndex, emptyLayer, reporter)
 		if err != nil {
 			return types.BlobInfo{}, "", err
@@ -899,9 +896,7 @@ func (ic *imageCopier) copyLayer(ctx context.Context, srcInfo types.BlobInfo, to
 		}
 
 		// Only report completion on success.
-		if reporter != nil {
-			reporter.reportDone()
-		}
+		reporter.reportDone()
 		bar.mark100PercentComplete()
 		return blobInfo, diffID, nil
 	}()
@@ -951,7 +946,7 @@ func updatedBlobInfoFromReuse(inputInfo types.BlobInfo, reusedBlob private.Reuse
 // and returns a complete blobInfo of the copied blob and perhaps a <-chan diffIDResult if diffIDIsNeeded, to be read by the caller.
 func (ic *imageCopier) copyLayerFromStream(ctx context.Context, srcStream io.Reader, srcInfo types.BlobInfo,
 	diffIDIsNeeded bool, toEncrypt bool, bar *progressBar, layerIndex int, emptyLayer bool,
-	reporter *progressReporter,
+	reporter progressReporter,
 ) (types.BlobInfo, <-chan diffIDResult, error) {
 	var getDiffIDRecorder func(compressiontypes.DecompressorFunc) io.Writer // = nil
 	var diffIDChan chan diffIDResult

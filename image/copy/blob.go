@@ -19,7 +19,7 @@ import (
 func (ic *imageCopier) copyBlobFromStream(ctx context.Context, srcReader io.Reader, srcInfo types.BlobInfo,
 	getOriginalLayerCopyWriter func(decompressor compressiontypes.DecompressorFunc) io.Writer,
 	isConfig bool, toEncrypt bool, bar *progressBar, layerIndex int, emptyLayer bool,
-	reporter *progressReporter,
+	reporter progressReporter,
 ) (types.BlobInfo, error) {
 	// The copying happens through a pipeline of connected io.Readers;
 	// that pipeline is built by updating stream.
@@ -85,8 +85,10 @@ func (ic *imageCopier) copyBlobFromStream(ctx context.Context, srcReader io.Read
 		return types.BlobInfo{}, err
 	}
 
-	// === Wrap stream with progress reporting if a reporter was provided.
-	if reporter != nil {
+	// === Report progress using the reporter, if required.
+	if ic.c.options.Progress != nil && ic.c.options.ProgressInterval > 0 {
+		// Note: the reporter can be no-op if the condition above evaluates
+		// false and in that case there's no reason to wrap the reader here.
 		stream.reader = newProgressReader(stream.reader, reporter)
 	}
 
